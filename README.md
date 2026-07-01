@@ -8,7 +8,7 @@ The project is not designed to prove authorship. It is designed to make automate
 
 AI-text detection is risky because polished human writing can look machine-generated, and edited AI output can look human. A detector that simply says “AI” or “human” with no explanation creates a false sense of certainty.
 
-Provenance Guard addresses this by combining multiple imperfect signals, returning `uncertain` when evidence is mixed, and allowing creators to appeal a classification. The goal is not an omniscient detector. The goal is a cautious transparency layer that records evidence and avoids pretending that surface-level authorship detection can prove who wrote something.
+Provenance Guard addresses this by combining multiple imperfect signals, returning `uncertain` when evidence is mixed, and allowing creators to appeal a classification. The goal is a cautious transparency layer that records evidence and avoids pretending that surface-level authorship detection can prove who wrote something.
 
 ## Tech Stack
 

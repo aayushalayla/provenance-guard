@@ -237,15 +237,16 @@ def combine_two_signal_scores(llm_score, stylometry_score):
     return round(combined_score, 4)
 
 
-def attribution_from_combined_score(combined_score):
-    if combined_score >= 0.70:
+def attribution_from_combined_score(ai_likelihood, confidence):
+    if ai_likelihood >= 0.70:
         return "likely_ai"
 
-    if combined_score <= 0.34:
+    if ai_likelihood <= 0.34:
         return "likely_human"
 
     return "uncertain"
 
+    return "uncertain"
 def combine_two_signal_scores(llm_score, stylometry_score):
     """
     M4 scoring.
@@ -257,11 +258,11 @@ def combine_two_signal_scores(llm_score, stylometry_score):
     return round(combined_score, 4)
 
 
-def attribution_from_combined_score(combined_score):
-    if combined_score >= 0.70:
+def attribution_from_combined_score(ai_likelihood, confidence):
+    if ai_likelihood >= 0.70:
         return "likely_ai"
 
-    if combined_score <= 0.34:
+    if ai_likelihood <= 0.34:
         return "likely_human"
 
     return "uncertain"
@@ -374,7 +375,7 @@ def submit():
     ai_likelihood = combined_score
     confidence = round(abs(ai_likelihood - 0.5) * 2, 4)
 
-    attribution = attribution_from_combined_score(ai_likelihood)
+    attribution = attribution_from_combined_score(ai_likelihood, confidence)
     label = placeholder_label(attribution)
 
     audit_entry = {

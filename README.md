@@ -11,7 +11,7 @@ The project is not designed to prove authorship. It is designed to make automate
 | M3 | Complete | `POST /submit`, first Groq LLM signal, `GET /log`, structured audit entries |
 | M4 | Complete | three-signal ensemble, combined scoring, confidence scoring, calibration examples |
 | M5 | Complete | final labels, `/appeal`, rate limiting, SQLite audit log |
-| M6 | In progress | README complete; walkthrough video link should be added after recording |
+| M6 | In progress | README complete |
 
 ## Problem
 

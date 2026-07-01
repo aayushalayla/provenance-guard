@@ -1,6 +1,6 @@
 # Provenance Guard
 
-Provenance Guard is a Flask API for text-authorship attribution. A user submits text, the system runs three detection signals, combines them into an AI-likelihood score and confidence score, returns a plain-language transparency label, stores the decision in SQLite, exposes audit events through `/log`, and gives creators a way to appeal.
+Provenance Guard is a Flask API for text-authorship attribution. A user submits text, the system runs three detection signals, combines them into an AI-likelihood score and confidence score, returns a plain-language transparency label, stores the decision in SQLite, exposes audit events through `/log`, and gives creators a way to appeal the decision.
 
 The project is not designed to prove authorship. It is designed to make automated attribution decisions visible, explainable, appealable, and auditable.
 

@@ -4,15 +4,6 @@ Provenance Guard is a Flask API for text-authorship attribution. A user submits 
 
 The project is not designed to prove authorship. It is designed to make automated attribution decisions visible, explainable, appealable, and auditable.
 
-## Project Status
-
-| Milestone | Status | Evidence |
-|---|---|---|
-| M3 | Complete | `POST /submit`, first Groq LLM signal, `GET /log`, structured audit entries |
-| M4 | Complete | three-signal ensemble, combined scoring, confidence scoring, calibration examples |
-| M5 | Complete | final labels, `/appeal`, rate limiting, SQLite audit log |
-| M6 | In progress | README complete |
-
 ## Problem
 
 AI-text detection is risky because polished human writing can look machine-generated, and edited AI output can look human. A detector that simply says “AI” or “human” with no explanation creates a false sense of certainty.

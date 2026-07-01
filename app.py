@@ -371,8 +371,10 @@ def submit():
 
     combined_score = combine_two_signal_scores(llm_score, stylometry_score)
 
-    attribution = attribution_from_combined_score(combined_score)
-    confidence = combined_score
+    ai_likelihood = combined_score
+    confidence = round(abs(ai_likelihood - 0.5) * 2, 4)
+
+    attribution = attribution_from_combined_score(ai_likelihood)
     label = placeholder_label(attribution)
 
     audit_entry = {
@@ -382,6 +384,7 @@ def submit():
         "timestamp": utc_timestamp(),
         "attribution": attribution,
         "confidence": confidence,
+        "ai_likelihood": ai_likelihood,
         "combined_score": combined_score,
         "llm_score": llm_score,
         "llm_reason": llm_signal["reason"],
@@ -398,6 +401,7 @@ def submit():
         "content_id": content_id,
         "creator_id": creator_id,
         "attribution": attribution,
+        "ai_likelihood": ai_likelihood,
         "confidence": confidence,
         "combined_score": combined_score,
         "label": label,

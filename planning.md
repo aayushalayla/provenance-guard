@@ -1739,23 +1739,3 @@ Planned AI use 3:
 ```text
 I will ask AI to help draft README explanations after the code works. I will revise the README to include my actual test outputs instead of generic examples.
 ```
-
----
-
-## Final Checkpoint
-
-Before submission, I should be able to show:
-
-* a working Flask backend
-* a successful `/submit` response
-* all three signal scores in the response
-* separate `ai_likelihood` and `confidence`
-* all three transparency labels
-* an appeal changing status to `under_review`
-* persistent SQLite audit entries
-* at least three visible audit-log entries
-* a rate-limit `429` response
-* `/analytics` output
-* README evidence
-* AI usage documentation
-* walkthrough video

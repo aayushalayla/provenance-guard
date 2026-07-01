@@ -3,6 +3,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
@@ -133,6 +134,137 @@ Text:
             "reason": f"Groq signal failed. Using neutral placeholder score. Error: {error}",
         }
 
+def stylometry_signal(text):
+    """
+    Second detection signal.
+
+    Returns a structural AI-likeness score from 0.0 to 1.0.
+
+    0.0 = structurally human-like
+    0.5 = mixed / unclear
+    1.0 = structurally AI-like
+    """
+
+    sentences = [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
+    words = re.findall(r"\b[\w']+\b", text.lower())
+    punctuation_marks = re.findall(r"[.,!?;:]", text)
+
+    if not words:
+        return {
+            "score": 0.5,
+            "metrics": {
+                "word_count": 0,
+                "sentence_count": 0,
+                "average_sentence_length": 0,
+                "sentence_length_variance": 0,
+                "type_token_ratio": 0,
+                "punctuation_density": 0,
+                "contraction_count": 0,
+                "first_person_count": 0,
+                "slang_count": 0,
+                "all_caps_count": 0,
+            },
+        }
+
+    word_count = len(words)
+    sentence_count = max(1, len(sentences))
+
+    sentence_lengths = [
+        len(re.findall(r"\b[\w']+\b", sentence.lower()))
+        for sentence in sentences
+    ]
+
+    average_sentence_length = word_count / sentence_count
+
+    if len(sentence_lengths) > 1:
+        mean_length = sum(sentence_lengths) / len(sentence_lengths)
+        sentence_length_variance = sum(
+            (length - mean_length) ** 2 for length in sentence_lengths
+        ) / len(sentence_lengths)
+    else:
+        sentence_length_variance = 0
+
+    type_token_ratio = len(set(words)) / word_count
+    punctuation_density = len(punctuation_marks) / max(1, len(text))
+
+    contractions = re.findall(r"\b\w+'\w+\b", text.lower())
+    first_person = re.findall(r"\b(i|me|my|mine|we|us|our|ours)\b", text.lower())
+    slang = re.findall(
+        r"\b(ok|yeah|lol|nah|gonna|wanna|kinda|sorta|honestly|bro|dude|mid)\b",
+        text.lower(),
+    )
+    all_caps_words = re.findall(r"\b[A-Z]{2,}\b", text)
+
+    uniformity_score = 1.0 - min(sentence_length_variance / 50, 1.0)
+    long_sentence_score = min(average_sentence_length / 25, 1.0)
+    low_informality_score = 1.0 - min(
+        (len(contractions) + len(first_person) + len(slang) + len(all_caps_words)) / 6,
+        1.0,
+    )
+    vocab_score = min(type_token_ratio, 1.0)
+
+    score = (
+        0.30 * uniformity_score
+        + 0.25 * long_sentence_score
+        + 0.25 * low_informality_score
+        + 0.20 * vocab_score
+    )
+
+    return {
+        "score": round(score, 4),
+        "metrics": {
+            "word_count": word_count,
+            "sentence_count": len(sentences),
+            "average_sentence_length": round(average_sentence_length, 4),
+            "sentence_length_variance": round(sentence_length_variance, 4),
+            "type_token_ratio": round(type_token_ratio, 4),
+            "punctuation_density": round(punctuation_density, 4),
+            "contraction_count": len(contractions),
+            "first_person_count": len(first_person),
+            "slang_count": len(slang),
+            "all_caps_count": len(all_caps_words),
+        },
+    }
+
+def combine_two_signal_scores(llm_score, stylometry_score):
+    """
+    M4 scoring.
+
+    Combines the LLM signal and stylometric signal into one AI-likeness score.
+    """
+
+    combined_score = (0.65 * llm_score) + (0.35 * stylometry_score)
+    return round(combined_score, 4)
+
+
+def attribution_from_combined_score(combined_score):
+    if combined_score >= 0.70:
+        return "likely_ai"
+
+    if combined_score <= 0.34:
+        return "likely_human"
+
+    return "uncertain"
+
+def combine_two_signal_scores(llm_score, stylometry_score):
+    """
+    M4 scoring.
+
+    Combines the LLM signal and stylometric signal into one AI-likeness score.
+    """
+
+    combined_score = (0.65 * llm_score) + (0.35 * stylometry_score)
+    return round(combined_score, 4)
+
+
+def attribution_from_combined_score(combined_score):
+    if combined_score >= 0.70:
+        return "likely_ai"
+
+    if combined_score <= 0.34:
+        return "likely_human"
+
+    return "uncertain"
 
 def attribution_from_llm_score(llm_score):
     """
@@ -160,19 +292,29 @@ def placeholder_confidence(llm_score):
     distance_from_middle = abs(llm_score - 0.5) * 2
     return round(distance_from_middle, 4)
 
-
 def placeholder_label(attribution):
     """
-    Temporary M3 label.
+    Temporary label.
 
     In M5, this becomes the final transparency-label function.
     """
 
     if attribution == "likely_ai":
-        return "M3 placeholder: This work currently appears likely AI-generated based on the first detection signal based on the first detection signal. Final transparency labels will be added later."
+        return (
+            "M4 placeholder: This work currently appears likely AI-generated "
+            "based on the first two detection signals. Final transparency labels will be added later."
+        )
 
     if attribution == "likely_human":
-        return "M3 placeholder: This work currently appears likely human-written based on the first detection signal based on the first detection signal. Final transparency labels will be added later."
+        return (
+            "M4 placeholder: This work currently appears likely human-written "
+            "based on the first two detection signals. Final transparency labels will be added later."
+        )
+
+    return (
+        "M4 placeholder: This work could not be clearly classified "
+        "based on the first two detection signals. Final transparency labels will be added later."
+    )
 
 def write_audit_entry(entry):
     with AUDIT_LOG_PATH.open("a", encoding="utf-8") as log_file:
@@ -202,11 +344,12 @@ def health_check():
         {
             "service": "Provenance Guard",
             "status": "running",
-            "milestone": "M3",
+            "milestone": "M4",
         }
     )
 
 
+@app.route("/submit", methods=["POST"])
 @app.route("/submit", methods=["POST"])
 def submit():
     payload = request.get_json(silent=True)
@@ -223,8 +366,13 @@ def submit():
     llm_signal = groq_llm_signal(text)
     llm_score = round(llm_signal["score"], 4)
 
-    attribution = attribution_from_llm_score(llm_score)
-    confidence = placeholder_confidence(llm_score)
+    stylometry = stylometry_signal(text)
+    stylometry_score = round(stylometry["score"], 4)
+
+    combined_score = combine_two_signal_scores(llm_score, stylometry_score)
+
+    attribution = attribution_from_combined_score(combined_score)
+    confidence = combined_score
     label = placeholder_label(attribution)
 
     audit_entry = {
@@ -234,11 +382,14 @@ def submit():
         "timestamp": utc_timestamp(),
         "attribution": attribution,
         "confidence": confidence,
+        "combined_score": combined_score,
         "llm_score": llm_score,
         "llm_reason": llm_signal["reason"],
+        "stylometry_score": stylometry_score,
+        "stylometry_metrics": stylometry["metrics"],
         "label": label,
         "status": "classified",
-        "milestone_note": "M3 uses only the Groq LLM signal. M4 will add stylometric heuristics.",
+        "milestone_note": "M4 uses Groq LLM signal plus stylometric heuristics.",
     }
 
     write_audit_entry(audit_entry)
@@ -248,12 +399,17 @@ def submit():
         "creator_id": creator_id,
         "attribution": attribution,
         "confidence": confidence,
+        "combined_score": combined_score,
         "label": label,
         "signals": {
             "llm": {
                 "score": llm_score,
                 "reason": llm_signal["reason"],
-            }
+            },
+            "stylometry": {
+                "score": stylometry_score,
+                "metrics": stylometry["metrics"],
+            },
         },
         "status": "classified",
     }
@@ -264,6 +420,7 @@ def submit():
 @app.route("/log", methods=["GET"])
 def get_log():
     return jsonify({"entries": read_audit_log()}), 200
+
 
 
 if __name__ == "__main__":

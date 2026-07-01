@@ -1,6 +1,6 @@
 # Provenance Guard
 
-Provenance Guard is a Flask API for text-authorship attribution. A user submits text, the system runs two detection signals, combines them into an AI-likelihood score, returns a transparency label, records the decision in an audit log, and gives creators a way to appeal.
+Provenance Guard is a Flask API for text-authorship attribution. A user submits text, the system runs three detection signals, combines them into an AI-likelihood score and confidence score, returns a plain-language transparency label, stores the decision in SQLite, exposes audit events through `/log`, and gives creators a way to appeal.
 
 The project is not designed to prove authorship. It is designed to make automated attribution decisions visible, explainable, appealable, and auditable.
 
@@ -9,15 +9,15 @@ The project is not designed to prove authorship. It is designed to make automate
 | Milestone | Status | Evidence |
 |---|---|---|
 | M3 | Complete | `POST /submit`, first Groq LLM signal, `GET /log`, structured audit entries |
-| M4 | Complete | second stylometric signal, combined scoring, calibration examples |
-| M5 | Complete | final labels, `/appeal`, rate limiting, complete audit log |
+| M4 | Complete | three-signal ensemble, combined scoring, confidence scoring, calibration examples |
+| M5 | Complete | final labels, `/appeal`, rate limiting, SQLite audit log |
 | M6 | In progress | README complete; walkthrough video link should be added after recording |
 
 ## Problem
 
 AI-text detection is risky because polished human writing can look machine-generated, and edited AI output can look human. A detector that simply says “AI” or “human” with no explanation creates a false sense of certainty.
 
-Provenance Guard addresses this by combining multiple imperfect signals, returning uncertainty when evidence is mixed, and allowing creators to appeal a classification. The goal is not an omniscient detector. The goal is a cautious transparency layer.
+Provenance Guard addresses this by combining multiple imperfect signals, returning `uncertain` when evidence is mixed, and allowing creators to appeal a classification. The goal is not an omniscient detector. The goal is a cautious transparency layer that records evidence and avoids pretending that surface-level authorship detection can prove who wrote something.
 
 ## Tech Stack
 
@@ -26,20 +26,27 @@ Provenance Guard addresses this by combining multiple imperfect signals, returni
 | Backend API | Flask |
 | LLM signal | Groq `llama-3.3-70b-versatile` |
 | Structural signal | Pure-Python stylometric heuristics |
+| Specificity signal | Pure-Python specificity/genericness heuristics |
 | Rate limiting | Flask-Limiter |
-| Audit log | JSONL file |
-| Environment | Python, `.env` for API key |
+| Persistence | SQLite |
+| Analytics | Custom `/analytics` endpoint |
+| Environment config | `python-dotenv` and `.env` for API key |
 
 ## Project Structure
 
 ```text
 Provenance_Guard/
-├── app.py              # Flask routes, signals, scoring, labels, audit logging
-├── planning.md         # architecture, signal plan, uncertainty plan, AI tool plan
+├── app.py              # Flask routes
+├── detector.py         # three detection signals and score combination
+├── storage.py          # SQLite persistence and audit events
+├── labels.py           # transparency label text
+├── analytics.py        # aggregate metrics for /analytics
+├── planning.md         # architecture and implementation plan
 ├── README.md           # final project documentation
 ├── requirements.txt    # project dependencies
-├── .gitignore          # excludes .env, .venv, cache files, audit log
-└── audit_log.jsonl     # runtime audit log, generated locally and gitignored
+├── .gitignore          # excludes .env, .venv, cache files, database
+└── data/
+    └── provenance_guard.db  # generated locally, gitignored
 ```
 
 ## Setup
@@ -69,11 +76,13 @@ Run the app:
 python app.py
 ```
 
-The server runs at:
+For my local demo, the server runs at:
 
 ```text
-http://localhost:5000
+http://localhost:5001
 ```
+
+If your local `app.py` uses port `5000` instead, replace `5001` with `5000` in the curl commands below.
 
 ## API Endpoints
 
@@ -82,7 +91,10 @@ http://localhost:5000
 | `GET` | `/` | health check |
 | `POST` | `/submit` | classify submitted text |
 | `POST` | `/appeal` | appeal a classification |
-| `GET` | `/log` | return recent audit-log entries |
+| `GET` | `/appeals` | list submitted appeals |
+| `GET` | `/log` | return structured audit events |
+| `GET` | `/analytics` | return aggregate classification and appeal metrics |
+| `POST` | `/certificate` | create a creator-attested process certificate |
 
 ## Architecture
 
@@ -91,7 +103,7 @@ http://localhost:5000
 ```text
 Client
   |
-  | POST /submit {text, creator_id}
+  | POST /submit {text, creator_id, optional content_type}
   v
 Input validation
   |
@@ -102,8 +114,11 @@ Signal 1: Groq LLM classifier
 Signal 2: Stylometric heuristic checker
   | returns stylometry_score + metrics
   v
+Signal 3: Specificity / genericness checker
+  | returns specificity_score + metrics
+  v
 Score combiner
-  | returns ai_likelihood + confidence
+  | returns ai_likelihood + signal_agreement + confidence
   v
 Attribution mapper
   | likely_ai / likely_human / uncertain
@@ -111,8 +126,9 @@ Attribution mapper
 Transparency label generator
   |
   v
-Structured JSONL audit log
-  |
+SQLite storage
+  | stores classification record
+  | writes classification_created audit event
   v
 JSON response
 ```
@@ -122,47 +138,64 @@ JSON response
 ```text
 Client
   |
-  | POST /appeal {content_id, creator_reasoning}
+  | POST /appeal {content_id, creator_id, creator_reasoning, optional_process_note}
   v
-Find original classification
+Input validation
   |
   v
-Update status to under_review
+Find original classification in SQLite
   |
   v
-Write appeal_submitted event
+Update classification status to under_review
+  |
+  v
+Create appeal record
+  |
+  v
+Write appeal_submitted audit event
   |
   v
 JSON confirmation
 ```
 
-## Submission Workflow
+### Analytics Flow
 
-1. A client sends a `POST /submit` request with `text` and `creator_id`.
-2. The API validates the request body.
-3. The text is evaluated by two detection signals:
-   - Groq LLM classifier
-   - stylometric heuristic checker
-4. The two scores are combined into `ai_likelihood`.
-5. The score maps to one of three attribution categories:
-   - `likely_ai`
-   - `likely_human`
-   - `uncertain`
-6. The system generates a plain-language transparency label.
-7. The full decision is written to `audit_log.jsonl`.
-8. The API returns the classification as JSON.
+```text
+Client
+  |
+  | GET /analytics
+  v
+Read SQLite classifications + appeals
+  |
+  v
+Calculate totals, averages, attribution counts, appeal count, appeal rate
+  |
+  v
+JSON analytics response
+```
 
-## Appeal Workflow
+### Certificate Flow
 
-1. A creator sends a `POST /appeal` request with `content_id` and `creator_reasoning`.
-2. The system looks up the original classification.
-3. If the content exists, its status changes to `under_review`.
-4. The appeal is written to the audit log as a separate event.
-5. The API returns an appeal confirmation.
-
-Automated reclassification is intentionally out of scope. An appeal introduces human review; it does not ask the detector to judge itself again.
+```text
+Client
+  |
+  | POST /certificate {content_id, creator_id, verification_note}
+  v
+Find original classification
+  |
+  v
+Create creator-attested process certificate
+  |
+  v
+Write certificate_created audit event
+  |
+  v
+JSON certificate response
+```
 
 ## `POST /submit`
+
+Classifies submitted writing and returns the attribution result.
 
 Required JSON body:
 
@@ -173,179 +206,187 @@ Required JSON body:
 }
 ```
 
-Example request:
-
-```bash
-curl -s -X POST http://localhost:5000/submit \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Artificial intelligence represents a transformative paradigm shift in modern society. It is important to note that stakeholders across various sectors must collaborate to ensure responsible deployment.", "creator_id": "test-ai"}' | PYTHON_COLORS=0 python -m json.tool
-```
-
-Example response fields:
+Optional field:
 
 ```json
 {
-  "content_id": "1e1ac5a9-8d91-47c4-9ef1-183502c70069",
+  "content_type": "essay"
+}
+```
+
+Example request:
+
+```bash
+curl -s -X POST http://localhost:5001/submit \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Artificial intelligence represents a transformative paradigm shift in modern society. It is important to note that while the benefits of AI are numerous, it is equally essential to consider the ethical implications. Furthermore, stakeholders across various sectors must collaborate to ensure responsible deployment.", "creator_id": "test-ai", "content_type": "essay"}' | PYTHON_COLORS=0 python -m json.tool
+```
+
+Example response:
+
+```json
+{
+  "ai_likelihood": 0.7618,
+  "attribution": "uncertain",
+  "confidence": 0.6195,
+  "content_id": "e6698d36-810d-4006-b7cc-8d69aa50433e",
   "creator_id": "test-ai",
-  "attribution": "likely_ai",
-  "ai_likelihood": 0.7479,
-  "confidence": 0.4958,
-  "combined_score": 0.7479,
-  "label": "This work shows strong signs of AI-generated text based on an automated multi-signal review. This label is not a final judgment of authorship and may be appealed by the creator.",
+  "label": "This work could not be classified with high confidence. The system found mixed or limited evidence, so readers should treat authorship as unresolved unless more context is provided.",
+  "signal_agreement": 0.7977,
   "signals": {
     "llm": {
-      "score": 0.8,
-      "reason": "The text features generic phrasing, polished structure, and formulaic transitions, which are characteristic of AI-generated content."
+      "reason": "The text features generic phrasing, polished structure, and formulaic transitions.",
+      "score": 0.8
+    },
+    "specificity": {
+      "metrics": {
+        "abstract_noun_count": 3,
+        "concrete_detail_count": 0,
+        "first_person_count": 0,
+        "formulaic_transition_count": 1,
+        "generic_phrase_count": 4,
+        "named_entity_proxy_count": 0,
+        "sensory_word_count": 0,
+        "time_or_place_marker_count": 0
+      },
+      "score": 0.845
     },
     "stylometry": {
-      "score": 0.6511
+      "metrics": {
+        "all_caps_count": 0,
+        "average_sentence_length": 14.3333,
+        "contraction_count": 0,
+        "first_person_count": 0,
+        "long_sentence_ratio": 0.0,
+        "punctuation_density": 0.0159,
+        "sentence_count": 3,
+        "sentence_length_variance": 29.5556,
+        "short_sentence_ratio": 0.0,
+        "type_token_ratio": 0.8837,
+        "word_count": 43
+      },
+      "score": 0.6427
     }
   },
   "status": "classified"
 }
 ```
 
+Note: this example returns `uncertain` even though `ai_likelihood` is high because the conservative mapper requires both high AI-likelihood and high confidence. This is intentional false-positive protection.
+
 ## Detection Signals
 
-The system uses two signals because no single detector is reliable enough on its own. The LLM signal evaluates broad style and semantic patterns. The stylometric signal measures inspectable surface features. Their disagreement is useful because it exposes uncertainty.
+The system uses three independent signals. Each signal returns a score from `0.0` to `1.0`.
+
+```text
+0.0 = strongly human-like
+0.5 = mixed / unclear
+1.0 = strongly AI-like
+```
 
 | Signal | What it measures | Why it helps | What it misses |
 |---|---|---|---|
 | Groq LLM classifier | Generic phrasing, formulaic structure, polished but impersonal tone, lack of specific lived detail | Captures whole-passage style and meaning better than hand-written rules | Can falsely flag polished, formal, academic, professional, or non-native-English human writing |
-| Stylometric heuristics | Word count, sentence count, average sentence length, sentence length variance, type-token ratio, punctuation density, contractions, first-person language, slang, all-caps words | Transparent, deterministic, cheap, and inspectable | Cannot understand meaning; weak on short text; formal human writing can look structurally AI-like |
+| Stylometric heuristics | Word count, sentence count, average sentence length, sentence length variance, type-token ratio, punctuation density, contractions, first-person language, all-caps words, short/long sentence ratios | Transparent, deterministic, cheap, and inspectable | Cannot understand meaning; weak on short text; formal human writing can look structurally AI-like |
+| Specificity / genericness heuristics | Concrete detail, sensory words, first-person markers, named-entity proxy count, time/place markers, generic phrases, abstract nouns, formulaic transitions | Separates situated writing from generic template-like prose | AI can fake specificity; abstract human writing may be wrongly treated as generic |
 
 ### Signal 1: Groq LLM Classifier
 
-The Groq signal asks `llama-3.3-70b-versatile` to classify whether the submitted text reads as AI-like or human-like. It returns a score from `0.0` to `1.0`.
-
-```text
-0.0 = strongly human-like
-1.0 = strongly AI-like
-```
+The Groq signal asks `llama-3.3-70b-versatile` to classify whether the submitted text reads as AI-like or human-like. The prompt explicitly tells the model not to classify based on topic alone. Formal subject matter is not enough to call something AI-generated.
 
 This signal is useful because it can notice broad patterns such as generic phrasing, overly smooth transitions, hedged structure, and a lack of concrete personal detail. Its weakness is that those same traits can appear in formal human writing.
 
 ### Signal 2: Stylometric Heuristic Checker
 
-The stylometric signal computes structural features directly from the text. It checks:
+The stylometric signal computes structural features directly from the text. It checks word count, sentence count, average sentence length, sentence length variance, type-token ratio, punctuation density, contraction count, first-person count, all-caps count, short sentence ratio, and long sentence ratio.
 
-- word count
-- sentence count
-- average sentence length
-- sentence length variance
-- type-token ratio
-- punctuation density
-- contraction count
-- first-person count
-- slang count
-- all-caps count
+This signal is useful because it is explainable. The audit log stores the exact metrics. Its weakness is that surface style is not authorship. A careful human writer may produce uniform prose, while edited AI text may include casual human-like irregularity.
 
-These metrics are combined into a stylometry score from `0.0` to `1.0`, where higher values indicate more AI-like structure.
+### Signal 3: Specificity / Genericness Checker
 
-This signal is useful because it is explainable. The audit log shows the exact metrics. Its weakness is that surface style is not authorship. A careful human writer may produce uniform prose, while edited AI text may include casual human-like irregularity.
+The specificity signal measures whether the text contains concrete, situated detail or generic, abstract, formulaic language. It counts generic phrases such as “it is important to note,” formulaic transitions such as “furthermore,” abstract nouns such as “society” or “framework,” and concrete-detail proxies such as sensory words, first-person markers, time/place markers, and named-entity-like capitalized words.
+
+This signal is useful because many AI-like submissions sound polished but unsituated. Its weakness is that specificity can be faked, and some legitimate human writing is abstract by genre.
 
 ## Confidence Scoring
 
-The system reports two related but different values.
+The system reports three related values:
+
+```text
+ai_likelihood
+signal_agreement
+confidence
+```
 
 `ai_likelihood` is the direction of the evidence. A value near `1.0` means the signals lean AI-like. A value near `0.0` means the signals lean human-like. A value near `0.5` means the evidence is mixed or borderline.
 
-`confidence` is how far the result is from the uncertain middle. It is computed as:
+`signal_agreement` measures whether the three signals point in the same direction.
 
 ```python
-confidence = abs(ai_likelihood - 0.5) * 2
+signal_agreement = 1 - (max(signal_scores) - min(signal_scores))
 ```
 
-This means a low AI-likelihood can still have high confidence if the system strongly believes the text is human-like. For example, the casual human example has `ai_likelihood = 0.1877` and `confidence = 0.6246`, because it is far from the uncertain middle.
+`confidence` measures how much the system should trust the classification. It combines distance from the uncertain middle with signal agreement.
+
+```python
+distance_from_middle = abs(ai_likelihood - 0.5) * 2
+
+confidence = (0.65 * distance_from_middle) + (0.35 * signal_agreement)
+```
 
 The combined AI-likelihood score is computed with a weighted average:
 
 ```python
-ai_likelihood = (0.65 * llm_score) + (0.35 * stylometry_score)
+ai_likelihood = (0.50 * llm_score) + (0.30 * stylometry_score) + (0.20 * specificity_score)
 ```
 
-The LLM signal receives more weight because it judges the whole passage, while the stylometric signal is narrower but more transparent.
+Reasoning for weights:
 
-### Classification Thresholds
+- LLM signal gets 50% because it evaluates the whole passage.
+- Stylometry gets 30% because it provides inspectable structural evidence.
+- Specificity gets 20% because it captures genericness, but concrete detail can be faked.
 
-| AI likelihood | Attribution |
+## Classification Thresholds
+
+The attribution mapper is deliberately conservative.
+
+| Condition | Attribution |
 |---|---|
-| `>= 0.70` | `likely_ai` |
-| `<= 0.34` | `likely_human` |
-| `0.35–0.69` | `uncertain` |
+| `ai_likelihood >= 0.75` and `confidence >= 0.65` | `likely_ai` |
+| `ai_likelihood <= 0.30` and `confidence >= 0.65` | `likely_human` |
+| everything else | `uncertain` |
 
-The uncertainty band is deliberately wide. A borderline case should not become an accusation.
+This means a text can have high AI-likelihood but still return `uncertain` if confidence is not high enough. That is intentional. A false positive against a human creator is more harmful than letting a borderline case remain unresolved.
 
 ## Calibration Results
 
-These are real results from local M5 testing.
+These are real local test results from the three-signal SQLite version.
 
-| Test case | LLM score | Stylometry score | AI likelihood | Confidence | Attribution |
-|---|---:|---:|---:|---:|---|
-| AI-like formal paragraph | 0.8000 | 0.6511 | 0.7479 | 0.4958 | `likely_ai` |
-| Casual human ramen review | 0.1200 | 0.3133 | 0.1877 | 0.6246 | `likely_human` |
-| Borderline remote-work paragraph | 0.4000 | 0.6282 | 0.4799 | 0.0402 | `uncertain` |
+| Test case | LLM score | Stylometry score | Specificity score | AI likelihood | Signal agreement | Confidence | Attribution |
+|---|---:|---:|---:|---:|---:|---:|---|
+| AI-like formal paragraph | 0.8000 | 0.6427 | 0.8450 | 0.7618 | 0.7977 | 0.6195 | `uncertain` |
+| Casual human ramen review | 0.1400 | 0.3133 | 0.0000 | 0.1640 | 0.6867 | 0.6771 | `likely_human` |
+| Borderline remote-work paragraph | 0.5000 | 0.6115 | 0.3333 | 0.5001 | 0.7218 | 0.2528 | `uncertain` |
 
-The human-like and borderline examples show the confidence logic clearly. The human-like example is far from the uncertain middle, so it receives a higher confidence score. The borderline example is very close to `0.5`, so confidence drops to `0.0402` and the system returns `uncertain`.
-
-## Example Scoring Results
-
-### AI-like example
-
-```json
-{
-  "attribution": "likely_ai",
-  "confidence": 0.4958,
-  "ai_likelihood": 0.7479,
-  "combined_score": 0.7479,
-  "llm_score": 0.8,
-  "stylometry_score": 0.6511
-}
-```
-
-### Human-like example
-
-```json
-{
-  "attribution": "likely_human",
-  "confidence": 0.6246,
-  "ai_likelihood": 0.1877,
-  "combined_score": 0.1877,
-  "llm_score": 0.12,
-  "stylometry_score": 0.3133
-}
-```
-
-### Borderline example
-
-```json
-{
-  "attribution": "uncertain",
-  "confidence": 0.0402,
-  "ai_likelihood": 0.4799,
-  "combined_score": 0.4799,
-  "llm_score": 0.4,
-  "stylometry_score": 0.6282
-}
-```
+The AI-like example shows the conservative design. It is AI-like, but confidence is just below the `0.65` threshold, so the system avoids the stronger `likely_ai` label. The casual human example is both low AI-likelihood and high enough confidence, so it returns `likely_human`. The borderline case remains `uncertain`.
 
 ## Transparency Label Variants
 
 The system returns one of three exact label variants.
 
-### High-confidence AI / likely AI label
+### `likely_ai`
 
 ```text
 This work shows strong signs of AI-generated text based on an automated multi-signal review. This label is not a final judgment of authorship and may be appealed by the creator.
 ```
 
-### High-confidence human / likely human label
+### `likely_human`
 
 ```text
 This work shows strong signs of human authorship based on an automated multi-signal review. This label is not a guarantee, but the available signals support human authorship.
 ```
 
-### Uncertain label
+### `uncertain`
 
 ```text
 This work could not be classified with high confidence. The system found mixed or limited evidence, so readers should treat authorship as unresolved unless more context is provided.
@@ -353,31 +394,42 @@ This work could not be classified with high confidence. The system found mixed o
 
 ## `POST /appeal`
 
+Allows a creator to contest a classification.
+
 Required JSON body:
 
 ```json
 {
   "content_id": "existing content id",
+  "creator_id": "creator identifier",
   "creator_reasoning": "creator explanation"
+}
+```
+
+Optional field:
+
+```json
+{
+  "optional_process_note": "extra context about how the piece was written"
 }
 ```
 
 Example request:
 
 ```bash
-curl -s -X POST http://localhost:5000/appeal \
+curl -s -X POST http://localhost:5001/appeal \
   -H "Content-Type: application/json" \
-  -d '{"content_id": "acd20519-4054-4be6-bd13-c60016dbad2d", "creator_reasoning": "I wrote this myself and want a human review because formal or polished writing can look more AI-like than casual writing."}' | PYTHON_COLORS=0 python -m json.tool
+  -d '{"content_id": "83a8177b-c19d-4ea2-929b-cfa1fdb65bf3", "creator_id": "test-borderline", "creator_reasoning": "I wrote this myself and want a human review because formal or polished writing can look more AI-like than casual writing.", "optional_process_note": "I drafted and revised this myself before submitting."}' | PYTHON_COLORS=0 python -m json.tool
 ```
 
 Example response:
 
 ```json
 {
-  "appeal_id": "23d882b6-c62a-4ab2-8707-b93921d418c9",
-  "content_id": "acd20519-4054-4be6-bd13-c60016dbad2d",
-  "status": "under_review",
-  "message": "Appeal received. This content has been marked for review."
+  "appeal_id": "08d5091b-0ab2-4d69-8c69-ed9b58b84b30",
+  "content_id": "83a8177b-c19d-4ea2-929b-cfa1fdb65bf3",
+  "message": "Appeal received. This content has been marked for human review.",
+  "status": "under_review"
 }
 ```
 
@@ -389,6 +441,105 @@ If the `content_id` does not exist, the API returns:
 }
 ```
 
+Automated reclassification is intentionally out of scope. An appeal introduces human review; it does not ask the detector to judge itself again.
+
+## `GET /appeals`
+
+Returns submitted appeals for reviewer inspection.
+
+Example request:
+
+```bash
+curl -s http://localhost:5001/appeals | PYTHON_COLORS=0 python -m json.tool
+```
+
+Example response:
+
+```json
+{
+  "appeals": [
+    {
+      "appeal_id": "08d5091b-0ab2-4d69-8c69-ed9b58b84b30",
+      "content_id": "83a8177b-c19d-4ea2-929b-cfa1fdb65bf3",
+      "created_at": "2026-07-01T05:01:42.649837+00:00",
+      "creator_id": "test-borderline",
+      "creator_reasoning": "I wrote this myself and want a human review because formal or polished writing can look more AI-like than casual writing.",
+      "optional_process_note": "I drafted and revised this myself before submitting.",
+      "status": "under_review"
+    }
+  ]
+}
+```
+
+## `GET /analytics`
+
+Returns aggregate metrics across classifications and appeals.
+
+Example request:
+
+```bash
+curl -s http://localhost:5001/analytics | PYTHON_COLORS=0 python -m json.tool
+```
+
+Example response:
+
+```json
+{
+  "appeal_count": 1,
+  "appeal_rate": 0.3333,
+  "average_ai_likelihood": 0.4753,
+  "average_confidence": 0.5165,
+  "false_positive_risk_note": "High-confidence AI labels require both high AI-likelihood (>= 0.75) and high confidence (>= 0.65).",
+  "likely_ai_count": 0,
+  "likely_human_count": 1,
+  "most_common_attribution": "uncertain",
+  "total_submissions": 3,
+  "uncertain_count": 2
+}
+```
+
+## `POST /certificate`
+
+Creates a creator-attested process certificate. This is not proof of authorship. It records that the creator supplied additional process context.
+
+Required JSON body:
+
+```json
+{
+  "content_id": "existing content id",
+  "creator_id": "creator identifier"
+}
+```
+
+Optional field:
+
+```json
+{
+  "verification_note": "Creator supplied a process note and requested review."
+}
+```
+
+Example request:
+
+```bash
+curl -s -X POST http://localhost:5001/certificate \
+  -H "Content-Type: application/json" \
+  -d '{"content_id": "83a8177b-c19d-4ea2-929b-cfa1fdb65bf3", "creator_id": "test-borderline", "verification_note": "Creator supplied a process note and requested review."}' | PYTHON_COLORS=0 python -m json.tool
+```
+
+Example response:
+
+```json
+{
+  "certificate_id": "4de60a33-8b7b-4f06-9ae0-bd8b20ea75dd",
+  "certificate_label": "Creator-attested human process",
+  "content_id": "83a8177b-c19d-4ea2-929b-cfa1fdb65bf3",
+  "display_text": "The creator has submitted additional process context for this work. This certificate records a human authorship claim but does not independently prove authorship."
+}
+```
+
+The certificate is deliberately modest. It does not say “verified human” because the system does not verify identity, draft history, timestamps, or external evidence.
+
 ## Rate Limiting
 
 The `/submit` endpoint is rate-limited with Flask-Limiter:
@@ -397,9 +548,7 @@ The `/submit` endpoint is rate-limited with Flask-Limiter:
 10 per minute; 100 per day
 ```
 
-The limit is applied to `/submit` because that endpoint calls an external LLM API and writes to the audit log. A normal creator may submit several pieces or retry a draft a few times, so `10 per minute` is enough for ordinary use. A script can easily flood the endpoint, so the per-minute limit catches abuse early. The daily limit caps sustained misuse and protects API cost.
-
-### Rate-limit Test
+The limit is applied to `/submit` because that endpoint calls an external LLM API and writes to the database. A normal creator may submit several pieces or retry a draft a few times, so `10 per minute` is enough for ordinary use. A script can easily flood the endpoint, so the per-minute limit catches abuse early. The daily limit caps sustained misuse and protects API cost.
 
 Rate-limit test with 12 rapid requests:
 
@@ -422,94 +571,150 @@ The final two requests were correctly rejected with HTTP `429`.
 
 ## Audit Log
 
-Every classification and appeal is written to `audit_log.jsonl`. The log is JSONL, meaning each line is a separate JSON object.
+Audit events are stored in SQLite at:
 
-Classification entries include:
+```text
+data/provenance_guard.db
+```
+
+`GET /log` returns the append-only audit trail as JSON.
+
+Classification audit events include:
 
 - `event_type`
 - `content_id`
 - `creator_id`
-- `timestamp`
+- `created_at`
 - `attribution`
-- `confidence`
 - `ai_likelihood`
-- `combined_score`
+- `confidence`
+- `signal_agreement`
 - `llm_score`
-- `llm_reason`
 - `stylometry_score`
-- `stylometry_metrics`
-- `label`
+- `specificity_score`
 - `status`
 
-Appeal entries include:
+Appeal audit events include:
 
 - `event_type`
 - `appeal_id`
 - `content_id`
 - `creator_id`
-- `timestamp`
+- `created_at`
 - `original_attribution`
-- `original_confidence`
 - `original_ai_likelihood`
+- `original_confidence`
 - `creator_reasoning`
+- `optional_process_note`
 - `status`
 
-## Audit Log Example
+Certificate audit events include:
 
-This sample shows three classification events and one appeal event.
+- `event_type`
+- `certificate_id`
+- `content_id`
+- `creator_id`
+- `created_at`
+- `certificate_label`
 
-```jsonl
-{"event_type": "classification_created", "content_id": "1e1ac5a9-8d91-47c4-9ef1-183502c70069", "creator_id": "test-ai", "timestamp": "2026-07-01T04:01:18.662278+00:00", "attribution": "likely_ai", "confidence": 0.4958, "ai_likelihood": 0.7479, "combined_score": 0.7479, "llm_score": 0.8, "llm_reason": "The text features generic phrasing, polished structure, and formulaic transitions, which are characteristic of AI-generated content. The language is also overly formal and lacks personal detail, suggesting a corporate or template-like style.", "stylometry_score": 0.6511, "stylometry_metrics": {"word_count": 43, "sentence_count": 3, "average_sentence_length": 14.3333, "sentence_length_variance": 29.5556, "type_token_ratio": 0.8837, "punctuation_density": 0.0159, "contraction_count": 0, "first_person_count": 0, "slang_count": 0, "all_caps_count": 1}, "label": "This work shows strong signs of AI-generated text based on an automated multi-signal review. This label is not a final judgment of authorship and may be appealed by the creator.", "status": "classified", "milestone_note": "M5 uses final transparency labels, two detection signals, and audit logging."}
-{"event_type": "classification_created", "content_id": "9430fadb-dc64-426a-9d86-3aa91d2f0254", "creator_id": "test-human", "timestamp": "2026-07-01T04:01:23.118631+00:00", "attribution": "likely_human", "confidence": 0.6246, "ai_likelihood": 0.1877, "combined_score": 0.1877, "llm_score": 0.12, "llm_reason": "text features informal language, personal detail, and uneven rhythm, indicating a human-like writing style", "stylometry_score": 0.3133, "stylometry_metrics": {"word_count": 55, "sentence_count": 5, "average_sentence_length": 11.0, "sentence_length_variance": 45.2, "type_token_ratio": 0.8727, "punctuation_density": 0.0137, "contraction_count": 1, "first_person_count": 4, "slang_count": 2, "all_caps_count": 1}, "label": "This work shows strong signs of human authorship based on an automated multi-signal review. This label is not a guarantee, but the available signals support human authorship.", "status": "classified", "milestone_note": "M5 uses final transparency labels, two detection signals, and audit logging."}
-{"event_type": "classification_created", "content_id": "acd20519-4054-4be6-bd13-c60016dbad2d", "creator_id": "test-borderline", "timestamp": "2026-07-01T04:01:27.640238+00:00", "attribution": "uncertain", "confidence": 0.0402, "ai_likelihood": 0.4799, "combined_score": 0.4799, "llm_score": 0.4, "llm_reason": "The text has a balanced and polished structure, but also includes a personal touch with 'I've been thinking a lot' and acknowledges complexity with 'genuine tradeoffs' and variability, which suggests a human-like perspective.", "stylometry_score": 0.6282, "stylometry_metrics": {"word_count": 39, "sentence_count": 3, "average_sentence_length": 13.0, "sentence_length_variance": 24.6667, "type_token_ratio": 0.8974, "punctuation_density": 0.0163, "contraction_count": 1, "first_person_count": 1, "slang_count": 0, "all_caps_count": 0}, "label": "This work could not be classified with high confidence. The system found mixed or limited evidence, so readers should treat authorship as unresolved unless more context is provided.", "status": "under_review", "milestone_note": "M5 uses final transparency labels, two detection signals, and audit logging."}
-{"event_type": "appeal_submitted", "appeal_id": "23d882b6-c62a-4ab2-8707-b93921d418c9", "content_id": "acd20519-4054-4be6-bd13-c60016dbad2d", "creator_id": "test-borderline", "timestamp": "2026-07-01T04:02:12.547511+00:00", "original_attribution": "uncertain", "original_confidence": 0.0402, "original_ai_likelihood": 0.4799, "creator_reasoning": "I wrote this myself and want a human review because formal or polished writing can look more AI-like than casual writing.", "status": "under_review", "message": "Creator appealed the classification. Content is now under review."}
+### `GET /log` Example
+
+```json
+{
+  "entries": [
+    {
+      "content_id": "83a8177b-c19d-4ea2-929b-cfa1fdb65bf3",
+      "created_at": "2026-07-01T05:07:52.987173+00:00",
+      "creator_id": "test-borderline",
+      "event_id": "b3f70fea-26ca-443f-880b-7c7f5687054b",
+      "event_type": "classification_created",
+      "payload": {
+        "ai_likelihood": 0.5001,
+        "attribution": "uncertain",
+        "confidence": 0.2528,
+        "llm_score": 0.5,
+        "signal_agreement": 0.7218,
+        "specificity_score": 0.3333,
+        "status": "classified",
+        "stylometry_score": 0.6115
+      }
+    },
+    {
+      "content_id": "09578989-4fa2-4841-8c39-24ff8542a21b",
+      "created_at": "2026-07-01T05:07:47.324120+00:00",
+      "creator_id": "test-human",
+      "event_id": "093ffa42-abea-41f3-8a88-289db7f0e2ea",
+      "event_type": "classification_created",
+      "payload": {
+        "ai_likelihood": 0.164,
+        "attribution": "likely_human",
+        "confidence": 0.6771,
+        "llm_score": 0.14,
+        "signal_agreement": 0.6867,
+        "specificity_score": 0.0,
+        "status": "classified",
+        "stylometry_score": 0.3133
+      }
+    },
+    {
+      "content_id": "e6698d36-810d-4006-b7cc-8d69aa50433e",
+      "created_at": "2026-07-01T05:07:36.242707+00:00",
+      "creator_id": "test-ai",
+      "event_id": "30cc7da6-35e1-495c-b42b-4c5cd678199d",
+      "event_type": "classification_created",
+      "payload": {
+        "ai_likelihood": 0.7618,
+        "attribution": "uncertain",
+        "confidence": 0.6195,
+        "llm_score": 0.8,
+        "signal_agreement": 0.7977,
+        "specificity_score": 0.845,
+        "status": "classified",
+        "stylometry_score": 0.6427
+      }
+    }
+  ]
+}
 ```
-
-The third classification entry has `status: "under_review"` because it was appealed. The appeal appears as a separate `appeal_submitted` event linked by the same `content_id`.
 
 ## Known Limitations
 
-The clearest false-positive risk is formal human writing. The LLM signal can treat polished, impersonal prose as AI-like because it looks generic or template-like. The stylometric signal can reinforce that mistake because academic, legal, policy, or professional writing often has regular sentence structure and limited informality markers.
+The system cannot prove authorship. It only evaluates surface evidence in text.
 
-The borderline remote-work example shows this uncertainty. The LLM score was `0.4`, while the stylometry score was `0.6282`. The signals did not fully agree, and the final `ai_likelihood` landed near the uncertain middle at `0.4799`. In that case, the uncertainty behavior worked correctly.
+The clearest false-positive risk is formal human writing. The LLM signal can treat polished, impersonal prose as AI-like because it looks generic or template-like. The stylometric signal can reinforce that mistake because academic, legal, policy, or professional writing often has regular sentence structure and limited informality markers. The specificity signal can also penalize abstract writing that is legitimately human-authored.
+
+The AI-like formal paragraph demonstrates the conservative design. It produced `ai_likelihood = 0.7618`, but confidence was `0.6195`, below the `0.65` threshold. The system therefore returned `uncertain` instead of `likely_ai`.
 
 Short text is another weakness. Stylometric statistics such as sentence length variance and type-token ratio become unstable when there are only one or two sentences.
 
-Edited AI text is also difficult. A human can revise AI output to add irregular phrasing, contractions, or personal detail, which may lower both signal scores.
+Edited AI text is difficult. A human can revise AI output to add irregular phrasing, contractions, or personal detail, which may lower the apparent AI-likelihood.
 
-If this were deployed for real, I would add persistent database storage, authentication for appeals, a larger labeled evaluation set, stronger calibration, and provenance evidence such as draft history or creator-attested writing process notes.
+Non-native English writing is also a risk area. Direct, formal, or grammatically regular writing can be misread as AI-like, so the system avoids making strong claims unless the score and confidence thresholds are both met.
+
+If this were deployed for real, I would add authentication for appeals, reviewer permissions, a larger labeled evaluation set, stronger calibration, and external provenance evidence such as draft history.
 
 ## Prototype Boundaries
 
-This prototype does not prove authorship. It estimates authorship risk from two imperfect signals. It also does not authenticate creators, resolve appeals, or make moderation decisions. The appeal workflow only marks content as `under_review` and records creator reasoning for later human review.
+This prototype does not prove authorship. It estimates authorship risk from three imperfect signals. It does not authenticate creators, resolve appeals, verify real-world identity, inspect document revision history, detect plagiarism, or make moderation decisions. The appeal workflow only marks content as `under_review` and records creator reasoning for later human review.
+
+The certificate endpoint is also intentionally limited. It records a creator-attested process note, but it does not independently verify that claim.
 
 ## Spec Reflection
 
-The spec helped by forcing the system to be multi-signal instead of relying on a single LLM classifier. That requirement shaped the architecture: signal functions produce separate scores, the score combiner merges them, the label generator translates the result, and the audit log records the whole decision. This made the pipeline easier to test and explain.
+The spec helped by forcing the system to be multi-signal instead of relying on a single LLM classifier. That requirement shaped the architecture: signal functions produce separate scores, the score combiner merges them, the label generator translates the result, and the audit log records the decision.
 
-The implementation diverged from the early plan in one important way: I separated `ai_likelihood` from `confidence`. At first, it was tempting to treat the combined AI score itself as confidence. That would be misleading because a low AI score can still be a confident human classification. The final version uses `ai_likelihood` to show direction and `confidence` to show distance from the uncertain middle.
+The implementation changed after testing. The original version used two signals and a JSONL audit log. The final version uses a modular file structure, SQLite persistence, three detection signals, an analytics endpoint, and a certificate endpoint to match the full planning document.
+
+The biggest design lesson was that `ai_likelihood` and `confidence` must remain separate. `ai_likelihood` says which direction the evidence points. `confidence` says how safe it is to trust that direction. Without that separation, the system would be more likely to overstate borderline results.
 
 ## AI Usage
 
 I used AI assistance in several specific ways.
 
-First, I used AI to translate the project requirements into a Flask architecture with `/submit`, `/appeal`, request validation, signal functions, score combination, labels, and audit logging. I revised the design by separating `ai_likelihood` from `confidence`, because using one number for both would make the output harder to interpret.
+First, I used AI to translate the project requirements into a Flask architecture with `/submit`, `/appeal`, request validation, signal functions, score combination, labels, and audit logging. I revised the design to keep `ai_likelihood`, `signal_agreement`, and `confidence` separate.
 
-Second, I used AI to help generate the stylometric signal. The suggested metrics included sentence length variance, type-token ratio, punctuation density, contractions, first-person words, slang, and all-caps words. I kept the metrics but made sure the function returned both a single score and the underlying measurements so the audit log would be inspectable.
+Second, I used AI to help generate the stylometric and specificity heuristic functions. The stylometric metrics included sentence length variance, type-token ratio, punctuation density, contractions, first-person words, all-caps words, and short/long sentence ratios. The specificity metrics included generic phrases, formulaic transitions, abstract nouns, sensory words, time/place markers, first-person markers, and named-entity proxies.
 
-Third, I used AI during debugging. When `/submit` returned a JSON parsing error, the actual problem was a Flask traceback caused by a function signature mismatch. I fixed the mismatch by updating `attribution_from_combined_score` so its definition matched how it was called in `submit()`.
+Third, I used AI during debugging. When `/submit` returned parsing or traceback errors, I inspected whether the route was returning valid JSON and whether the function signatures matched their call sites. I also fixed command-line mistakes such as using blank lines after curl continuation backslashes.
 
 Fourth, I used AI to pressure-test the scoring logic. The formal and borderline examples exposed false-positive risk, so I documented that limitation instead of hiding it.
-
-## Submission Checklist
-
-- [x] `POST /submit` returns `content_id`, attribution, confidence, and label
-- [x] Two detection signals are implemented and documented
-- [x] Confidence scoring maps to `likely_ai`, `likely_human`, and `uncertain`
-- [x] All three transparency label variants are written out exactly
-- [x] `POST /appeal` captures creator reasoning
-- [x] Appeal updates content status to `under_review`
-- [x] Audit log records classifications and appeals
-- [x] `/submit` is rate-limited
-- [x] README includes real scoring examples and known limitations
-- [ ] Portfolio walkthrough video recorded and linked

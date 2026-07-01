@@ -5,14 +5,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 import re
 
+
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from groq import Groq
 
 
 load_dotenv()
 
 app = Flask(__name__)
+
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=[],
+    storage_uri="memory://",
+)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
@@ -39,6 +49,20 @@ def validate_submit_payload(payload):
 
     return True, None
 
+def validate_appeal_payload(payload):
+    if not isinstance(payload, dict):
+        return False, "Request body must be a JSON object."
+
+    content_id = payload.get("content_id")
+    creator_reasoning = payload.get("creator_reasoning")
+
+    if not isinstance(content_id, str) or not content_id.strip():
+        return False, "Missing or invalid 'content_id'."
+
+    if not isinstance(creator_reasoning, str) or not creator_reasoning.strip():
+        return False, "Missing or invalid 'creator_reasoning'."
+
+    return True, None
 
 def clamp_score(value):
     try:
@@ -293,28 +317,31 @@ def placeholder_confidence(llm_score):
     distance_from_middle = abs(llm_score - 0.5) * 2
     return round(distance_from_middle, 4)
 
-def placeholder_label(attribution):
+def label_for_attribution(attribution):
     """
-    Temporary label.
+    Final transparency labels for M5.
 
-    In M5, this becomes the final transparency-label function.
+    These exact strings should also appear in README.md.
     """
 
     if attribution == "likely_ai":
         return (
-            "M4 placeholder: This work currently appears likely AI-generated "
-            "based on the first two detection signals. Final transparency labels will be added later."
+            "This work shows strong signs of AI-generated text based on an automated "
+            "multi-signal review. This label is not a final judgment of authorship "
+            "and may be appealed by the creator."
         )
 
     if attribution == "likely_human":
         return (
-            "M4 placeholder: This work currently appears likely human-written "
-            "based on the first two detection signals. Final transparency labels will be added later."
+            "This work shows strong signs of human authorship based on an automated "
+            "multi-signal review. This label is not a guarantee, but the available "
+            "signals support human authorship."
         )
 
     return (
-        "M4 placeholder: This work could not be clearly classified "
-        "based on the first two detection signals. Final transparency labels will be added later."
+        "This work could not be classified with high confidence. The system found "
+        "mixed or limited evidence, so readers should treat authorship as unresolved "
+        "unless more context is provided."
     )
 
 def write_audit_entry(entry):
@@ -338,6 +365,62 @@ def read_audit_log(limit=20):
 
     return entries
 
+def read_all_audit_entries():
+    if not AUDIT_LOG_PATH.exists():
+        return []
+
+    with AUDIT_LOG_PATH.open("r", encoding="utf-8") as log_file:
+        lines = log_file.readlines()
+
+    entries = []
+    for line in lines:
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    return entries
+
+
+def rewrite_audit_log(entries):
+    with AUDIT_LOG_PATH.open("w", encoding="utf-8") as log_file:
+        for entry in entries:
+            log_file.write(json.dumps(entry) + "\n")
+
+
+def find_classification_by_content_id(content_id):
+    entries = read_all_audit_entries()
+
+    for entry in reversed(entries):
+        if (
+            entry.get("event_type") == "classification_created"
+            and entry.get("content_id") == content_id
+        ):
+            return entry
+
+    return None
+
+
+def update_classification_status(content_id, new_status):
+    entries = read_all_audit_entries()
+    updated = False
+
+    for entry in entries:
+        if (
+            entry.get("event_type") == "classification_created"
+            and entry.get("content_id") == content_id
+        ):
+            entry["status"] = new_status
+            updated = True
+
+    if updated:
+        rewrite_audit_log(entries)
+
+    return updated
+
+@app.errorhandler(429)
+def too_many_requests(error):
+    return jsonify({"error": "Rate limit exceeded. Please try again later."}), 429
 
 @app.route("/", methods=["GET"])
 def health_check():
@@ -345,13 +428,14 @@ def health_check():
         {
             "service": "Provenance Guard",
             "status": "running",
-            "milestone": "M4",
+            "milestone": "M5",
         }
     )
 
 
 @app.route("/submit", methods=["POST"])
 @app.route("/submit", methods=["POST"])
+@limiter.limit("10 per minute;100 per day")
 def submit():
     payload = request.get_json(silent=True)
 
@@ -376,7 +460,7 @@ def submit():
     confidence = round(abs(ai_likelihood - 0.5) * 2, 4)
 
     attribution = attribution_from_combined_score(ai_likelihood, confidence)
-    label = placeholder_label(attribution)
+    label = label_for_attribution(attribution)
 
     audit_entry = {
         "event_type": "classification_created",
@@ -393,7 +477,7 @@ def submit():
         "stylometry_metrics": stylometry["metrics"],
         "label": label,
         "status": "classified",
-        "milestone_note": "M4 uses Groq LLM signal plus stylometric heuristics.",
+        "milestone_note": "M5 uses final transparency labels, two detection signals, and audit logging.",
     }
 
     write_audit_entry(audit_entry)
@@ -421,6 +505,53 @@ def submit():
 
     return jsonify(response_body), 201
 
+@app.route("/appeal", methods=["POST"])
+def appeal():
+    payload = request.get_json(silent=True)
+
+    is_valid, error_message = validate_appeal_payload(payload)
+    if not is_valid:
+        return jsonify({"error": error_message}), 400
+
+    content_id = payload["content_id"].strip()
+    creator_reasoning = payload["creator_reasoning"].strip()
+
+    original_classification = find_classification_by_content_id(content_id)
+
+    if original_classification is None:
+        return jsonify({"error": "No classification found for this content_id."}), 404
+
+    update_classification_status(content_id, "under_review")
+
+    appeal_id = str(uuid.uuid4())
+
+    appeal_entry = {
+        "event_type": "appeal_submitted",
+        "appeal_id": appeal_id,
+        "content_id": content_id,
+        "creator_id": original_classification["creator_id"],
+        "timestamp": utc_timestamp(),
+        "original_attribution": original_classification["attribution"],
+        "original_confidence": original_classification["confidence"],
+        "original_ai_likelihood": original_classification.get("ai_likelihood"),
+        "creator_reasoning": creator_reasoning,
+        "status": "under_review",
+        "message": "Creator appealed the classification. Content is now under review.",
+    }
+
+    write_audit_entry(appeal_entry)
+
+    return (
+        jsonify(
+            {
+                "appeal_id": appeal_id,
+                "content_id": content_id,
+                "status": "under_review",
+                "message": "Appeal received. This content has been marked for review.",
+            }
+        ),
+        201,
+    )
 
 @app.route("/log", methods=["GET"])
 def get_log():

@@ -2,13 +2,13 @@
 
 Provenance Guard is a Flask API for text-authorship attribution. A user submits text, the system runs three detection signals, combines them into an AI-likelihood score and confidence score, returns a plain-language transparency label, stores the decision in SQLite, exposes audit events through `/log`, and gives creators a way to appeal the decision.
 
-The project is not designed to prove authorship. It is designed to make automated attribution decisions visible, explainable, appealable, and auditable.
+This project is not designed to prove authorship. It is designed to make automated attribution decisions visible, explainable, appealable, and auditable.
 
 ## Problem
 
 AI-text detection is risky because polished human writing can look machine-generated, and edited AI output can look human. A detector that simply says “AI” or “human” with no explanation creates a false sense of certainty.
 
-Provenance Guard addresses this by combining multiple imperfect signals, returning `uncertain` when evidence is mixed, and allowing creators to appeal a classification. The goal is a cautious transparency layer that records evidence and avoids pretending that surface-level authorship detection can prove who wrote something.
+Provenance Guard addresses this by combining multiple imperfect signals, returning `uncertain` when evidence is mixed, and allowing creators to appeal a classification. Knowledge of a writing source is essential to how a reader receives a piece of text. The goal here is a cautious transparency layer that records evidence and avoids pretending that surface-level authorship detection can prove who wrote something.
 
 ## Tech Stack
 
@@ -686,7 +686,7 @@ If this were deployed for real, I would add authentication for appeals, reviewer
 
 ## Prototype Boundaries
 
-This prototype does not prove authorship. It estimates authorship risk from three imperfect signals. It does not authenticate creators, resolve appeals, verify real-world identity, inspect document revision history, detect plagiarism, or make moderation decisions. The appeal workflow only marks content as `under_review` and records creator reasoning for later human review.
+This prototype does not prove authorship. It estimates authorship risk from three imperfect signals. It does not authenticate creators, resolve appeals, verify real-world identity, inspect document revision history, detect plagiarism, or make moderation decisions. The appeal workflow only marks content as `under_review` and records the creator's reasoning for later human review.
 
 The certificate endpoint is also intentionally limited. It records a creator-attested process note, but it does not independently verify that claim.
 

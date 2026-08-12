@@ -708,4 +708,4 @@ Second, I used AI to help generate the stylometric and specificity heuristic fun
 
 Third, I used AI during debugging. When `/submit` returned parsing or traceback errors, I inspected whether the route was returning valid JSON and whether the function signatures matched their call sites. I also fixed command-line mistakes such as using blank lines after curl continuation backslashes.
 
-Fourth, I used AI to pressure-test the scoring logic. The formal and borderline examples exposed false-positive risk, so I documented that limitation instead of hiding it.
+Fourth, I used AI to pressure-test the scoring logic. The formal and borderline examples exposed false-positive risk, so I documented that as a known limtation.

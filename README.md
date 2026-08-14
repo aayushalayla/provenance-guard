@@ -4,11 +4,21 @@ Provenance Guard is a Flask API for text-authorship attribution. A user submits 
 
 This project is not designed to prove authorship. It is designed to make automated attribution decisions visible, explainable, appealable, and auditable.
 
-## Problem
+## Motivation
+How do you know whether a post was made by a person or generated with AI assistance and passed off as entirely their own? 
 
-AI-text detection is risky because polished human writing can look machine-generated, and edited AI output can look human. A detector that simply says “AI” or “human” with no explanation creates a false sense of certainty.
+AI-text detection is risky because polished human writing can look machine-generated, and edited AI output can look human. A detector that simply labels “AI” or “human” without an explanation creates a false sense of certainty.
 
-Provenance Guard addresses this by combining multiple imperfect signals, returning `uncertain` when evidence is mixed, and allowing creators to appeal a classification. Knowledge of a writing source is essential to how a reader receives a piece of text. The goal here is a cautious transparency layer that records evidence and avoids pretending that surface-level authorship detection can prove who wrote something.
+The deception is alienating because it removes context from an audience. To restore context and build trust, Provenance Guard combines multiple imperfect signals, returns `uncertain` when evidence is mixed, and allows creators to appeal a classification. Knowledge of a writing source is essential to how a reader receives a piece of text. The goal here is a cautious transparency layer that records evidence and avoids pretending that surface-level authorship detection can prove who wrote something.
+
+## Design Decisions
+A false positive is worse than a false negative because it puts the burden of appeal on the author. 
+The confidence scoring reflects this asymmetry: 
+- `likely_ai` requires `ai_likelihood >= 0.75` 
+- `likely_human` requires `ai_likelihood <= 0.30`
+
+ The 0.25 and 0.20 from the neutral midpoint attempt to remedy the pipeline's over-attribution to AI. 
+ The LLM signal makes up 50% of the weight and tends to read polished, formal, or non-native English prose, as the stylometric signal compounds the error, since the writing is structurally similar. Requiring `confidence >= 0.65' is another guard so that even if a text looks like AI, it can return as `uncertain` if the signals disagree. 
 
 ## Tech Stack
 
@@ -45,14 +55,14 @@ Provenance_Guard/
 Create and activate a virtual environment:
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 ```
 
 Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 
 Create a `.env` file in the project root:
@@ -64,16 +74,14 @@ GROQ_API_KEY=your_groq_api_key_here
 Run the app:
 
 ```bash
-python app.py
+python3 app.py
 ```
 
-For my local demo, the server runs at:
+The server runs at: 
 
 ```text
-http://localhost:5001
+http://localhost:5000
 ```
-
-If your local `app.py` uses port `5000` instead, replace `5001` with `5000` in the curl commands below.
 
 ## API Endpoints
 
@@ -105,7 +113,7 @@ Signal 1: Groq LLM classifier
 Signal 2: Stylometric heuristic checker
   | returns stylometry_score + metrics
   v
-Signal 3: Specificity / genericness checker
+Signal 3: Specificity/genericness checker
   | returns specificity_score + metrics
   v
 Score combiner
@@ -140,7 +148,7 @@ Find original classification in SQLite
 Update classification status to under_review
   |
   v
-Create appeal record
+Create an appeal record
   |
   v
 Write appeal_submitted audit event
@@ -159,7 +167,7 @@ Client
 Read SQLite classifications + appeals
   |
   v
-Calculate totals, averages, attribution counts, appeal count, appeal rate
+Calculate totals, averages, attribution counts, appeal count, and appeal rate
   |
   v
 JSON analytics response
@@ -205,15 +213,15 @@ Optional field:
 }
 ```
 
-Example request:
+### Example request:
 
 ```bash
-curl -s -X POST http://localhost:5001/submit \
+curl -s -X POST http://localhost:5000/submit \
   -H "Content-Type: application/json" \
   -d '{"text": "Artificial intelligence represents a transformative paradigm shift in modern society. It is important to note that while the benefits of AI are numerous, it is equally essential to consider the ethical implications. Furthermore, stakeholders across various sectors must collaborate to ensure responsible deployment.", "creator_id": "test-ai", "content_type": "essay"}' | PYTHON_COLORS=0 python -m json.tool
 ```
 
-Example response:
+### Example response:
 
 ```json
 {
@@ -278,20 +286,20 @@ The system uses three independent signals. Each signal returns a score from `0.0
 | Signal | What it measures | Why it helps | What it misses |
 |---|---|---|---|
 | Groq LLM classifier | Generic phrasing, formulaic structure, polished but impersonal tone, lack of specific lived detail | Captures whole-passage style and meaning better than hand-written rules | Can falsely flag polished, formal, academic, professional, or non-native-English human writing |
-| Stylometric heuristics | Word count, sentence count, average sentence length, sentence length variance, type-token ratio, punctuation density, contractions, first-person language, all-caps words, short/long sentence ratios | Transparent, deterministic, cheap, and inspectable | Cannot understand meaning; weak on short text; formal human writing can look structurally AI-like |
-| Specificity / genericness heuristics | Concrete detail, sensory words, first-person markers, named-entity proxy count, time/place markers, generic phrases, abstract nouns, formulaic transitions | Separates situated writing from generic template-like prose | AI can fake specificity; abstract human writing may be wrongly treated as generic |
+| Stylometric heuristics | Word count, sentence count, average sentence length, sentence length variance, type-token ratio, punctuation density, contractions, first-person language, all-caps words, short/long sentence ratios | Transparent, deterministic, cheap, and inspectable | Cannot understand meaning; weak on short text; formal human writing can look AI-like structurally |
+| Specificity/genericness heuristics | Concrete detail, sensory words, first-person markers, named-entity proxy count, time/place markers, generic phrases, abstract nouns, formulaic transitions | Separates situated writing from generic template-like prose | AI can fake specificity; abstract human writing may be wrongly treated as generic |
 
 ### Signal 1: Groq LLM Classifier
 
 The Groq signal asks `llama-3.3-70b-versatile` to classify whether the submitted text reads as AI-like or human-like. The prompt explicitly tells the model not to classify based on topic alone. Formal subject matter is not enough to call something AI-generated.
 
-This signal is useful because it can notice broad patterns such as generic phrasing, overly smooth transitions, hedged structure, and a lack of concrete personal detail. Its weakness is that those same traits can appear in formal human writing.
+This signal is useful because it can notice broad patterns such as generic phrasing, overly smooth transitions, hedged structure, and a lack of concrete personal details. Its weakness is that those same traits can appear in formal human writing.
 
 ### Signal 2: Stylometric Heuristic Checker
 
 The stylometric signal computes structural features directly from the text. It checks word count, sentence count, average sentence length, sentence length variance, type-token ratio, punctuation density, contraction count, first-person count, all-caps count, short sentence ratio, and long sentence ratio.
 
-This signal is useful because it is explainable. The audit log stores the exact metrics. Its weakness is that surface style is not authorship. A careful human writer may produce uniform prose, while edited AI text may include casual human-like irregularity.
+This signal is useful because it is explainable. The audit log stores the exact metrics. Its weakness is that surface style is not authorship. A careful human writer may produce uniform prose, while an edited AI-assisted text may be adjusted to casual human-like irregularity.
 
 ### Signal 3: Specificity / Genericness Checker
 
@@ -339,7 +347,7 @@ Reasoning for weights:
 
 ## Classification Thresholds
 
-The attribution mapper is deliberately conservative.
+The attribution mapper is deliberately conservative as specified in the Design Decisions above
 
 | Condition | Attribution |
 |---|---|
@@ -347,7 +355,6 @@ The attribution mapper is deliberately conservative.
 | `ai_likelihood <= 0.30` and `confidence >= 0.65` | `likely_human` |
 | everything else | `uncertain` |
 
-This means a text can have high AI-likelihood but still return `uncertain` if confidence is not high enough. That is intentional. A false positive against a human creator is more harmful than letting a borderline case remain unresolved.
 
 ## Calibration Results
 
@@ -408,9 +415,9 @@ Optional field:
 Example request:
 
 ```bash
-curl -s -X POST http://localhost:5001/appeal \
+curl -s -X POST http://localhost:5000/appeal \
   -H "Content-Type: application/json" \
-  -d '{"content_id": "83a8177b-c19d-4ea2-929b-cfa1fdb65bf3", "creator_id": "test-borderline", "creator_reasoning": "I wrote this myself and want a human review because formal or polished writing can look more AI-like than casual writing.", "optional_process_note": "I drafted and revised this myself before submitting."}' | PYTHON_COLORS=0 python -m json.tool
+  -d '{"content_id": "83a8177b-c19d-4ea2-929b-cfa1fdb65bf3", "creator_id": "test-borderline", "creator_reasoning": "I wrote this myself and want a human review because formal or polished writing can look more AI-like than casual writing.", "optional_process_note": "I drafted and revised this myself with a formal audience in mind before submitting."}' | PYTHON_COLORS=0 python -m json.tool
 ```
 
 Example response:
@@ -441,7 +448,7 @@ Returns submitted appeals for reviewer inspection.
 Example request:
 
 ```bash
-curl -s http://localhost:5001/appeals | PYTHON_COLORS=0 python -m json.tool
+curl -s http://localhost:5000/appeals | PYTHON_COLORS=0 python -m json.tool
 ```
 
 Example response:
@@ -469,7 +476,7 @@ Returns aggregate metrics across classifications and appeals.
 Example request:
 
 ```bash
-curl -s http://localhost:5001/analytics | PYTHON_COLORS=0 python -m json.tool
+curl -s http://localhost:5000/analytics | PYTHON_COLORS=0 python -m json.tool
 ```
 
 Example response:
@@ -513,7 +520,7 @@ Optional field:
 Example request:
 
 ```bash
-curl -s -X POST http://localhost:5001/certificate \
+curl -s -X POST http://localhost:5000/certificate \
   -H "Content-Type: application/json" \
   -d '{"content_id": "83a8177b-c19d-4ea2-929b-cfa1fdb65bf3", "creator_id": "test-borderline", "verification_note": "Creator supplied a process note and requested review."}' | PYTHON_COLORS=0 python -m json.tool
 ```
@@ -529,7 +536,7 @@ Example response:
 }
 ```
 
-The certificate is deliberately modest. It does not say “verified human” because the system does not verify identity, draft history, timestamps, or external evidence.
+The certificate is deliberately modest, and it does not say “verified human” because the system does not verify identity, draft history, timestamps, or external evidence.
 
 ## Rate Limiting
 
@@ -706,6 +713,6 @@ First, I used AI to translate the project requirements into a Flask architecture
 
 Second, I used AI to help generate the stylometric and specificity heuristic functions. The stylometric metrics included sentence length variance, type-token ratio, punctuation density, contractions, first-person words, all-caps words, and short/long sentence ratios. The specificity metrics included generic phrases, formulaic transitions, abstract nouns, sensory words, time/place markers, first-person markers, and named-entity proxies.
 
-Third, I used AI during debugging. When `/submit` returned parsing or traceback errors, I inspected whether the route was returning valid JSON and whether the function signatures matched their call sites. I also fixed command-line mistakes such as using blank lines after curl continuation backslashes.
+Third, I used AI during debugging. When `/submit` returned parsing or traceback errors, I inspected whether the route was returning valid JSON and whether the function signatures matched their call sites. I also fixed command-line mistakes, such as using blank lines after curl continuation backslashes.
 
-Fourth, I used AI to pressure-test the scoring logic. The formal and borderline examples exposed false-positive risk, so I documented that as a known limtation.
+Fourth, I used AI to pressure-test the scoring logic. The formal and borderline examples exposed false-positive risk, so I documented that as a known limitation and encoded it as assertions in the tests. 

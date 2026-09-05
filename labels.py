@@ -2,8 +2,7 @@
 labels.py
 
 Maps an attribution category to the exact reader-facing transparency
-label text. These three strings are the canonical label variants and
-must match what is documented in README.md verbatim.
+label text.
 """
 
 LABELS = {

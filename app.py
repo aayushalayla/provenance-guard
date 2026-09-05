@@ -1,11 +1,15 @@
 """
 app.py
 
-Flask routes for Provenance Guard. Wires together detector.py (signals +
-scoring), labels.py (transparency label text), storage.py (SQLite
-persistence + audit log), and analytics.py (dashboard metrics).
+Flask routes for Provenance Guard:
+using detector.py (signals + scoring),
+labels.py (transparency label text),
+storage.py (SQLite
+persistence + audit log),
+and analytics.py (the dashboard metrics).
 """
 
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -18,15 +22,16 @@ import detector
 import labels
 import storage
 
+MAX_TEXT_LENGTH = 20_000
+
 app = Flask(__name__)
 
 limiter = Limiter(
     get_remote_address,
     app=app,
     default_limits=[],
-    storage_uri="memory://",
+    storage_uri=os.getenv("RATELIMIT_STORAGE_URI", "memory://"),
 )
-
 storage.init_db()
 
 
@@ -42,6 +47,7 @@ def new_id():
 # Validation helpers
 # ---------------------------------------------------------------------------
 
+
 def validate_submit_payload(payload):
     if not isinstance(payload, dict):
         return False, "Request body must be a JSON object."
@@ -54,6 +60,12 @@ def validate_submit_payload(payload):
 
     if not isinstance(creator_id, str) or not creator_id.strip():
         return False, "Missing or invalid 'creator_id'."
+
+    if len(text) > MAX_TEXT_LENGTH:
+        return (
+            False,
+            f"'text' exceeds the maximum length of {MAX_TEXT_LENGTH} characters.",
+        )
 
     return True, None
 
@@ -98,18 +110,44 @@ def validate_certificate_payload(payload):
 # Error handlers
 # ---------------------------------------------------------------------------
 
+
 @app.errorhandler(429)
 def too_many_requests(error):
     return jsonify({"error": "Rate limit exceeded. Please try again later."}), 429
+
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"error": "Not found."}), 404
+
+
+@app.errorhandler(405)
+def method_not_allowed(error):
+    return jsonify({"error": "Method not allowed for this endpoint."}), 405
+
+
+@app.errorhandler(500)
+def internal_server_error(error):
+    app.logger.exception("Unhandled server error.")
+    return jsonify({"error": "Internal server error."}), 500
 
 
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
+
 @app.route("/", methods=["GET"])
 def health_check():
-    return jsonify({"service": "Provenance Guard", "status": "running", "version": "1.0"})
+    return jsonify(
+        {
+            "service": "Provenance Guard",
+            "status": "running",
+            "version": "1.0",
+            "llm_model": detector.GROQ_MODEL,
+            "llm_signal": detector.LLM_SIGNAL_STATUS,
+        }
+    )
 
 
 @app.route("/submit", methods=["POST"])
@@ -132,7 +170,10 @@ def submit():
     specificity_result = detector.specificity_signal(text)
 
     ai_likelihood, signal_agreement, confidence = detector.combine_scores(
-        llm_result["score"], stylometry_result["score"], specificity_result["score"]
+        llm_result["score"],
+        stylometry_result["score"],
+        specificity_result["score"],
+        word_count=stylometry_result["metrics"]["word_count"],
     )
 
     attribution = detector.map_attribution(ai_likelihood, confidence)
@@ -188,8 +229,14 @@ def submit():
         "label": label,
         "signals": {
             "llm": {"score": llm_result["score"], "reason": llm_result["reason"]},
-            "stylometry": {"score": stylometry_result["score"], "metrics": stylometry_result["metrics"]},
-            "specificity": {"score": specificity_result["score"], "metrics": specificity_result["metrics"]},
+            "stylometry": {
+                "score": stylometry_result["score"],
+                "metrics": stylometry_result["metrics"],
+            },
+            "specificity": {
+                "score": specificity_result["score"],
+                "metrics": specificity_result["metrics"],
+            },
         },
         "status": "classified",
     }
@@ -198,6 +245,7 @@ def submit():
 
 
 @app.route("/appeal", methods=["POST"])
+@limiter.limit("5 per minute;50 per day")
 def appeal():
     payload = request.get_json(silent=True)
 
@@ -213,17 +261,24 @@ def appeal():
     original = storage.get_classification(content_id)
     if original is None:
         return jsonify({"error": "No classification found for this content_id."}), 404
-    
+
     if original["creator_id"] != creator_id:
-    
         return (
-        jsonify(
-            {
-                "error": "creator_id does not match the creator_id for this content_id."
-            }
-        ),
-        400,
-    )
+            jsonify(
+                {
+                    "error": "Creator_id does not match the creator_id for this content_id."
+                }
+            ),
+            403,
+        )
+
+    if storage.has_open_appeal(content_id):
+        return (
+            jsonify(
+                {"error": "An appeal for this content_id is already under review."}
+            ),
+            409,
+        )
     storage.update_classification_status(content_id, "under_review")
 
     appeal_id = new_id()
@@ -276,7 +331,15 @@ def get_appeals():
 
 @app.route("/log", methods=["GET"])
 def get_log():
-    return jsonify({"entries": storage.read_audit_events()}), 200
+    try:
+        limit = int(request.args.get("limit", 50))
+    except (TypeError, ValueError):
+        return jsonify({"error": "'limit' must be an integer."}), 400
+
+    limit = max(1, min(limit, 500))
+    return jsonify(
+        {"entries": storage.read_audit_events(limit=limit), "limit": limit}
+    ), 200
 
 
 @app.route("/analytics", methods=["GET"])
@@ -285,6 +348,7 @@ def get_analytics():
 
 
 @app.route("/certificate", methods=["POST"])
+@limiter.limit("5 per minute; 50 per day")
 def certificate():
     payload = request.get_json(silent=True)
 
@@ -298,7 +362,20 @@ def certificate():
 
     original = storage.get_classification(content_id)
     if original is None:
-        return jsonify({"error": "No classification found for this content_id."}), 404
+        return (
+            jsonify({"error": "No classification found for this content_id."}),
+            404,
+        )
+
+    if original["creator_id"] != creator_id:
+        return (
+            jsonify(
+                {
+                    "error": "creator_id does not match the creator_id for this content_id."
+                }
+            ),
+            403,
+        )
 
     certificate_id = new_id()
     certificate_label = "Creator-attested human process"
@@ -345,4 +422,8 @@ def certificate():
 
 
 if __name__ == "__main__":
-    app.run(debug=False, port=5001)
+    app.run(
+        host=os.getenv("HOST", "127.0.0.1"),
+        port=int(os.getenv("PORT", "5000")),
+        debug=False,
+    )

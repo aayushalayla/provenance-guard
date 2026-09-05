@@ -1,32 +1,14 @@
 # Provenance Guard Planning
+This is a pre-implementation plan. 
+README.md shows what was actually built and where the build diverged from this plan. 
 
 ## Project Overview
 
 Provenance Guard is an authorship-transparency backend for creative sharing platforms. It analyzes submitted text and returns a structured attribution result: `likely_ai`, `likely_human`, or `uncertain`.
 
-The system is not designed as a perfect AI detector. Perfect AI detection is not realistic, especially for short, edited, formal, hybrid, or genre-bending writing. Provenance Guard is designed as a transparency system: it surfaces evidence, communicates uncertainty, protects creators from overconfident false accusations, and gives creators a route to appeal.
+The system is not designed as a perfect AI detector. Perfect AI detection is not realistic, especially for short, edited, formal, hybrid, or genre-bending writing. 
 
-The project will include the required backend features and two planned stretch features:
-
-Required features:
-
-* `POST /submit` endpoint for text submissions
-* Multi-signal detection pipeline
-* Confidence scoring with uncertainty
-* Plain-language transparency labels
-* Creator appeals workflow
-* Rate limiting
-* Structured audit log
-* `planning.md`
-* `README.md`
-* AI usage documentation
-
-Planned stretch features:
-
-* Ensemble detection using 3 detection signals
-* Analytics dashboard endpoint
-* Lightweight provenance certificate endpoint
-
+Provenance Guard is designed as a transparency system: it surfaces evidence, communicates uncertainty, protects creators from overconfident false accusations, and gives creators a route to appeal.
 ---
 
 ## Design Thesis
@@ -708,7 +690,6 @@ This signal is independent from the LLM. It gives the system measurable evidence
 
 The specificity signal measures whether the text contains concrete, situated, human-like detail or generic, abstract, formulaic language.
 
-This is the planned ensemble stretch signal.
 
 ### What it measures
 
@@ -1253,7 +1234,7 @@ The relationship between monetary policy and asset price inflation has been exte
 
 Problem:
 
-Formal human writing may look polished, generic, and low in personal markers.
+Formal human writing looks polished, generic, and low in any personal markers.
 
 Expected handling:
 
@@ -1557,8 +1538,6 @@ I will test all six planned inputs and inspect:
 * `confidence`
 * final attribution
 
-If a test result is unintuitive, I will inspect which signal is misbehaving rather than changing thresholds blindly.
-
 ---
 
 ## M5: Production Layer
@@ -1574,7 +1553,6 @@ If a test result is unintuitive, I will inspect which signal is misbehaving rath
 ### What I will ask it to generate
 
 I will ask for:
-
 * label generation function
 * `POST /appeal`
 * `GET /appeals`
@@ -1595,22 +1573,9 @@ I will test:
 * repeated submit requests trigger `429`
 
 ---
+## Additonal Features 
 
-## Stretch Feature Plan
-
-I will complete required features first, then add stretch features.
-
-### Stretch 1: Ensemble Detection
-
-This is already built into the design through the third specificity/genericness signal.
-
-Documentation requirement:
-
-* README will explain the 3 signals.
-* README will show the weighting approach.
-* `/submit` output will visibly include all 3 signal scores.
-
-### Stretch 2: Analytics Dashboard
+### Analytics Dashboard
 
 Endpoint:
 
@@ -1629,9 +1594,6 @@ Metrics:
 * average AI-likelihood
 * average confidence
 * most common attribution
-
-Documentation requirement:
-
 * README will include a sample `/analytics` response.
 
 ### Stretch 3: Provenance Certificate
@@ -1659,7 +1621,7 @@ Documentation requirement:
 
 ## Known Limitations
 
-The system cannot prove authorship. It only evaluates surface evidence in text.
+The system only evaluates surface evidence in text.
 
 The system will struggle with:
 
@@ -1672,9 +1634,11 @@ The system will struggle with:
 * heavily edited AI output
 * human writing that intentionally imitates AI style
 * AI writing that includes fake personal details
+* resubmitted writing 
 
 The system’s value is not certainty. Its value is structured evidence, uncertainty-aware labeling, and appealability.
 
+If the ways in which a text is being classified as AI or Humam-like are explained in the code, someone can adjust their writing to curb the criteria. 
 ---
 
 ## Implementation Order
@@ -1698,8 +1662,7 @@ I will build in this order:
 15. Add `GET /analytics`.
 16. Add `POST /certificate`.
 17. Run tests with six inputs.
-18. Capture README evidence.
-19. Record walkthrough video.
+18. Add it to my README as evidence.
 
 ---
 
@@ -1708,20 +1671,16 @@ I will build in this order:
 In the README, I will explain:
 
 1. One way the spec helped:
-
    * The spec separated `ai_likelihood` from `confidence`, which made the implementation more careful about uncertainty.
 
 2. One way implementation changed:
 
-   * If I adjust signal weights or thresholds after testing, I will document why.
+   * If I adjust signal weights or thresholds after testing, I will document why. 
    * If Groq API access fails, I will document the fallback placeholder behavior and explain how that limits the demo.
 
 ---
 
 ## AI Usage Plan
-
-I will document at least two specific AI uses in the README.
-
 Planned AI use 1:
 
 ```text

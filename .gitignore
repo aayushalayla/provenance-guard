@@ -3,3 +3,7 @@
 __pycache__/
 *.pyc
 data/provenance_guard.db
+calibration-run.txt
+submit-example.json
+.pytest_cache/
+.ruff_cache/

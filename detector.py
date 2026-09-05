@@ -240,7 +240,7 @@ def stylometry_signal(text):
     if len(sentence_lengths) > 1:
         mean_len = sum(sentence_lengths) / len(sentence_lengths)
         sentence_length_variance = sum(
-            (l - mean_len) ** 2 for l in sentence_lengths
+            (sentence_length - mean_len) ** 2 for sentence_length in sentence_lengths
         ) / len(sentence_lengths)
     else:
         sentence_length_variance = 0
@@ -252,8 +252,14 @@ def stylometry_signal(text):
     first_person = FIRST_PERSON_PATTERN.findall(text.lower())
     all_caps_words = ALL_CAPS_PATTERN.findall(text)
 
-    short_sentences = [l for l in sentence_lengths if l <= 5]
-    long_sentences = [l for l in sentence_lengths if l >= 25]
+    short_sentences = [
+        sentence_length for sentence_length in sentence_lengths if sentence_length <= 5
+    ]
+
+    long_sentences = [
+        sentence_length for sentence_length in sentence_lengths if sentence_length >= 25
+    ]
+
     short_sentence_ratio = len(short_sentences) / len(sentence_lengths)
     long_sentence_ratio = len(long_sentences) / len(sentence_lengths)
 
